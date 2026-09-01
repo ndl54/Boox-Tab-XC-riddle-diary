@@ -9,9 +9,10 @@ behavior that is not in the Onyx SDK docs.
 
 ```
 app/src/main/java/com/billtt/riddle/
+├── RiddleApp.kt         # Application: HiddenApiBypass + RxManager init — REQUIRED for the pen (see below)
 ├── MainActivity.kt      # Full-screen entry; gestures (long-press = settings); settings dialog; pen attach timing
 ├── DiaryController.kt    # State machine (write→absorb→await→reveal→linger→fade); TouchHelper wiring; animation driver
-├── DiaryView.kt          # Page rendering: live ink, banded absorb cache, reply reveal; page PNG capture
+├── DiaryView.kt          # Page rendering: banded absorb cache, reply reveal; page PNG capture
 ├── Oracle.kt             # Backend interface + OracleFactory + shared persona prompts
 ├── AnthropicOracle.kt    # Anthropic backend (official Java SDK, Claude vision)
 ├── OpenAiOracle.kt       # OpenAI backend (Chat Completions; any OpenAI-compatible endpoint via base URL)
@@ -21,32 +22,72 @@ app/src/main/java/com/billtt/riddle/
 └── Prefs.kt              # Provider / key / model persistence
 ```
 
+Plus `app/libs/`: the **local Onyx AAR set** (pen 1.5.2 + base 1.8.4 + device 1.3.3 +
+`onyxsdk-pen-native-classes.jar`), taken verbatim from Boox-EinkDraw. See "The
+pen-input story" — do not switch back to the maven coordinates.
+
 ## The pen-input story (most important)
 
-The single biggest device-specific finding: **on the Note X2, the Onyx pen
-callbacks (`RawInputCallback.onBeginRawDrawing` etc.) only fire in
-`FEATURE_APP_TOUCH_RENDER` mode.** The default SurfaceFlinger hardware-draw mode
-(plain `TouchHelper.create(view, callback)`) — and a `SurfaceView` host — both
-leave the callbacks silent under this firmware (you see `RawInputReader: Empty
-region detected when mapping` and `nativeRawReader` starts, but no callbacks).
-The system Notes app can hardware-draw ink because it uses a system-level path
-that is not reachable through the public `onyxsdk-pen` API.
+**Final state (2026-09-01): zero-latency hardware ink, verified on-device.**
+Earlier revisions of this file claimed app-render mode was the only working
+path and hardware ink was unreachable — that was wrong on both counts. The
+real story has two independent layers:
+
+1. **Why the pen can die entirely: Android 11 hidden-API blocking.**
+   `RawInputReader` maps the limit rect to digitizer coordinates by reflecting
+   into the firmware framework (`android.onyx.ViewUpdateHelper.mapToRawTouchPoint`).
+   Under Android 11's non-SDK restrictions that reflection silently fails, the
+   mapped rect comes back empty (`RawInputReader: Empty region detected when
+   mapping!!!!!`) and **no pen points are ever delivered** — in any render
+   mode. This is what made default-mode experiments look "unsupported".
+   Fix: `RiddleApp` (Application class) runs
+   `HiddenApiBypass.addHiddenApiExemptions("")` + `RxManager.Builder.initAppContext`
+   before anything touches the SDK. With the exemption, the mapping returns the
+   full digitizer rect and callbacks work in every mode.
+
+2. **Why maven `onyxsdk-pen:1.5.4` is slow: missing native fast-path classes.**
+   The maven AAR's render layer falls back to slow software stroke drawing.
+   The firmware's fast engine lives in `NeoPenNative`/`NeoPen*` classes that
+   1.5.4 does not bundle. Boox-EinkDraw ships them as
+   `onyxsdk-pen-native-classes.jar` (extracted from a device Notes APK) plus
+   its local pen/base/device AARs — we bundle the same set in `app/libs`.
+   With them, `FEATURE_ALL_TOUCH_RENDER` + render layer ON gives stock-Notes
+   speed ink through the SDK's render layer.
 
 Consequences baked into the current design:
 
-- **`TouchHelper.create(view, TouchHelper.FEATURE_APP_TOUCH_RENDER, callback)`** —
-  this is the only mode that delivers pen points here. Do not "simplify" it back
-  to the default create overload or a SurfaceView host; ink stops working.
-- **No hardware live ink.** In app-render mode Onyx does not draw the ink itself.
-  `EpdController.lineTo/quadTo` were also tried and did **not** paint on this
-  device. So live ink during writing is drawn in **software**: `DiaryView`
-  accumulates the in-progress stroke and, throttled (`LIVE_THROTTLE_MS`), does a
-  **local** `invalidate(rect)` over just the new segment's bounding box. This is
-  slightly behind the pen (e-ink software limit) but it is the only "ink appears
-  as you write" path available.
+- **`RiddleApp` must stay declared in the manifest** — remove it and the pen
+  goes completely dead (Empty region), in every TouchHelper mode.
+- **`app/libs` AAR set + `onyxsdk-pen-native-classes.jar`** — switching back to
+  maven `onyxsdk-pen:1.5.4` compiles fine but ink reverts to slow software
+  rendering (the native fast-path classes are gone).
+- **4-arg `create(view, FEATURE_ALL_TOUCH_RENDER, callback, false)`** — the
+  `false` keeps TouchHelper from installing its own OnTouchListener, so
+  MainActivity's listener survives; it forwards events via
+  `controller.forwardTouchToPen(event)`. This coexistence is also what keeps
+  the long-press settings gesture working (with the 3-arg overload the helper's
+  listener, installed later at attach, clobbers it and settings becomes
+  unreachable).
+- **Call order is critical** (Boox-EinkDraw recipe, see `attach()`):
+  strokeWidth/enableFingerTouch/onlyEnableFingerTouch/strokeColor/setLimitRect
+  → `openRawDrawing()` → style → re-apply width+color →
+  `setRawDrawingRenderEnabled(false)` → `setRawDrawingEnabled(true)`.
+  Note `setRawDrawingEnabled(b)` internally cascades
+  `setRawDrawingRenderEnabled(b)` + `setRawInputReaderEnable(b)` (javap-verified
+  on 1.5.2 and 1.5.4 alike) — so render OFF must come right before the final
+  enable, and resume paths only need `setRawDrawingEnabled(true)`.
+- **Live ink is drawn by the SDK's render layer** (hardware speed); the app
+  collects points via callbacks and renders the finished stroke on pen-up:
+  `onEndRawDrawing` sets `pendingPenUpRefresh`, then `onPenUpRefresh`
+  (exact moment the preview clears) triggers one `EInk.animateFrame(view)`
+  invalidate, with a 120 ms delayed fallback if it never fires.
+- **Palm rejection:** `enableFingerTouch(false)` + `onlyEnableFingerTouch(false)`
+  — stylus only. (There is NO `setRawPointFilterEnabled` on onyxsdk-pen;
+  `enableFingerTouch` is the real API, verified via javap.)
+- **Quirk (also present in Boox-EinkDraw): the very first stroke after launch
+  may not preview**; from the second stroke the hardware ink is live.
 - **Attach timing:** attach `TouchHelper` only after the window has focus
-  (`onWindowFocusChanged`), so the view's on-screen position is final. Attaching
-  before focus contributes to the empty-region problem.
+  (`onWindowFocusChanged`), so the view's on-screen position is final.
 
 ## Refresh / animation pipeline
 
@@ -92,11 +133,12 @@ incompatibility across models/gateways); reply length is bounded by the prompt.
 
 Needs Android Studio, or JDK 17 + Android SDK 34 (`compileSdk 34`, `minSdk 28`).
 
-- **Onyx SDK** comes from the official Maven repo
-  `http://repo.boox.com/repository/maven-public/` (declared in `settings.gradle`
-  with `allowInsecureProtocol`). Versions: `onyxsdk-pen:1.5.4`,
-  `onyxsdk-device:1.3.5`. (The demo's older `1.4.11`/`1.2.29` also work for input
-  but `1.5.4` was used during device debugging.)
+- **Onyx SDK comes from the local AAR set in `app/libs`** (pen 1.5.2, base 1.8.4,
+  device 1.3.3 + `onyxsdk-pen-native-classes.jar`, plus `onyxsdk-baselite:1.1.1`
+  from the Boox maven repo for the `base.data.TouchPoint` supertype).
+  The maven `onyxsdk-pen:1.5.4` builds but lacks the firmware's native fast-path
+  classes → slow software ink; see "The pen-input story". (RxJava 2/1 and
+  `hiddenapibypass` are pulled in as the Onyx SDK's runtime requirements.)
 - **Jetifier is required** (`android.enableJetifier=true`): `onyxsdk-device:1.3.5`
   pulls in the legacy Android Support Library, which collides with AndroidX
   without it.
@@ -107,8 +149,24 @@ Needs Android Studio, or JDK 17 + Android SDK 34 (`compileSdk 34`, `minSdk 28`).
 ./gradlew assembleDebug   # or Run from Android Studio
 ```
 
-`local.properties` (`sdk.dir=…`) is generated by Android Studio; for a
-command-line build point it at your own SDK.
+`local.properties` (`sdk.dir=…`) is generated by Android Studio; for
+command-line builds point it at your own SDK.
+
+### Building on Windows (verified 2026-08-31)
+
+- JDK 17 at `C:\Users\pangc\jdk17` (Temurin zip), Android SDK at
+  `C:\Users\pangc\android-sdk` (cmdline-tools + `platforms;android-34` +
+  `build-tools;34.0.0`). Build with `JAVA_HOME` set, `./gradlew.bat assembleDebug`.
+- **`local.properties` must use forward slashes** (`sdk.dir=C:/Users/pangc/android-sdk`).
+  A properties-escaped backslash path (`C\:\Users\...`) gets its backslashes
+  eaten by the properties parser and AGP dies with a misleading
+  "Could not determine the dependencies of null / IOException".
+- The repo path contains an apostrophe (`Tom Riddle's Diary`); if AGP chokes on
+  it, build through the junction `C:\riddle` (created 2026-08-31, points at this
+  directory).
+- Debug keystore is per-machine: a Windows-built APK will not `install -r` over
+  the Mac-built one — `adb uninstall com.billtt.riddle` first, then re-inject
+  `shared_prefs/riddle.xml` (see below) and `pm enable` again (BOOX auto-freeze).
 
 ## Install & debug on the device
 
@@ -127,5 +185,5 @@ command-line build point it at your own SDK.
 - The reply is font-rendered reveal, not stroke-level handwriting animation.
 - UI strings (`res/values/strings.xml`) are Chinese (the device user's language);
   everything else — code comments and docs — is English.
-- Truly hardware-latency live ink would need a lower-level Onyx path (e.g.
-  `onyxsdk-scribble`) or system-level access beyond `onyxsdk-pen`.
+- Live ink latency: **solved** (hardware render layer, see "The pen-input story").
+  Remaining quirk: the first stroke after launch may not preview.

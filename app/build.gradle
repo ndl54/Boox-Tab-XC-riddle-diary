@@ -52,9 +52,24 @@ android {
 }
 
 dependencies {
-    // Onyx BOOX SDK：低延迟原始笔迹输入 + 电子墨水屏刷新控制
-    implementation 'com.onyx.android.sdk:onyxsdk-pen:1.5.4'
-    implementation 'com.onyx.android.sdk:onyxsdk-device:1.3.5'
+    // Onyx BOOX SDK：低延迟原始笔迹输入 + 电子墨水屏刷新控制。
+    // 用 Boox-EinkDraw 实测零延迟的整套本地库（勿升 maven 新版）：
+    // pen/base/device 的 AAR 只是壳，硬件快速笔迹引擎 NeoPenNative 等真身类
+    // 在 onyxsdk-pen-native-classes.jar（EinkDraw 作者从设备 knote2 APK 提取）。
+    // maven 1.5.4 缺这些类 → 渲染层退回慢速软件路径，这是"不跟手"的病根。
+    implementation files('libs/onyxsdk-base-1.8.4.aar')
+    implementation files('libs/onyxsdk-pen-1.5.2.aar')
+    implementation files('libs/onyxsdk-device-1.3.3.aar')
+    implementation files('libs/onyxsdk-pen-native-classes.jar')
+    // base-1.8.4 的 data.note.TouchPoint 继承 base.data.TouchPoint，后者只在 baselite 里
+    implementation 'com.onyx.android.sdk:onyxsdk-baselite:1.1.1'
+
+    // Onyx SDK 运行时需要（RxManager 两代都用到；hiddenapi 反射放行）
+    implementation 'io.reactivex.rxjava2:rxjava:2.2.21'
+    implementation 'io.reactivex.rxjava2:rxandroid:2.1.1'
+    implementation 'io.reactivex:rxjava:1.3.8'
+    implementation 'io.reactivex:rxandroid:1.2.1'
+    implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:4.3'
 
     // Anthropic 官方 Java SDK（Claude API，视觉识别手写内容）
     implementation 'com.anthropic:anthropic-java:2.34.0'

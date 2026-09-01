@@ -1,8 +1,11 @@
 package com.billtt.riddle
 
 import android.app.Activity
+import android.graphics.Color
 import android.graphics.Rect
+import android.graphics.RectF
 import android.util.Log
+import android.view.MotionEvent
 import android.widget.Toast
 import com.onyx.android.sdk.pen.RawInputCallback
 import com.onyx.android.sdk.pen.TouchHelper
@@ -23,9 +26,13 @@ import kotlinx.coroutines.withTimeout
  * State machine: writing -> ink absorption -> awaiting reply -> reply reveal ->
  * linger -> reply fade -> writing.
  *
- * During writing, pen points arrive via TouchHelper (app-render mode; see attach())
- * and are drawn live in software by DiaryView. When idle is detected the raw pen is
- * disabled and the fade animations run via DiaryView + e-ink DU4 fast refresh.
+ * During writing, the SDK's render layer draws the live stroke through the NeoPen
+ * hardware fast path (zero latency, like the stock Notes app), while the app receives
+ * every point via callbacks and renders the finished stroke in software on pen-up.
+ * Requires the app-class bootstrap in RiddleApp (hidden-API exemption; without it the
+ * raw-touch region mapping fails with "Empty region detected when mapping" and the pen
+ * delivers no points) and the local onyxsdk AAR set bundled in app/libs (the maven
+ * builds lack the firmware's native fast-path classes — see app/build.gradle).
  */
 class DiaryController(
     private val activity: Activity,
@@ -42,6 +49,10 @@ class DiaryController(
     private var touchHelper: TouchHelper? = null
     private var cycleJob: Job? = null
     @Volatile private var skipLingerRequested = false
+
+    /** Set on pen-up; onPenUpRefresh (exact moment the hardware preview clears) beats the
+     *  delayed fallback to repaint the finished stroke with the app's own rendering. */
+    @Volatile private var pendingPenUpRefresh = false
 
     // The stroke currently being written (accumulated from move callbacks; used as a
     // fallback on pen-up if the full point list wasn't delivered).
@@ -70,18 +81,24 @@ class DiaryController(
         }
         val limit = Rect(0, 0, view.width, view.height)
         val ok = runCatching {
-            // On this device only the app-render mode (FEATURE_APP_TOUCH_RENDER) delivers
-            // pen-point callbacks; the default SurfaceFlinger hardware-draw mode does not
-            // fire callbacks under this firmware. Live ink during writing is therefore
-            // drawn in software by DiaryView (see the move callback / addLivePoint).
-            touchHelper = TouchHelper.create(view, TouchHelper.FEATURE_APP_TOUCH_RENDER, rawCallback)
-                .setStrokeWidth(view.baseStrokeWidth)
-                .setStrokeStyle(TouchHelper.STROKE_STYLE_PENCIL)
-                .setLimitRect(limit, ArrayList())
-                .openRawDrawing()
-            touchHelper?.setRawInputReaderEnable(true)
-            touchHelper?.setRawDrawingRenderEnabled(true)
-            touchHelper?.setRawDrawingEnabled(true)
+            // Zero-latency hardware ink (Boox-EinkDraw recipe; the order is critical):
+            // the 4-arg create with touchListener=false keeps the helper from installing
+            // its own OnTouchListener (MainActivity's listener must survive — it forwards
+            // events to the pen via forwardTouchToPen, which also lets the long-press
+            // settings gesture coexist with raw pen input).
+            val h = TouchHelper.create(view, TouchHelper.FEATURE_ALL_TOUCH_RENDER, rawCallback, false)
+            h.setStrokeWidth(view.baseStrokeWidth)
+            h.enableFingerTouch(false)          // stylus only: palm/finger touches must not draw
+            h.onlyEnableFingerTouch(false)
+            h.setStrokeColor(Color.BLACK)
+            h.setLimitRect(limit, ArrayList())
+            h.openRawDrawing()
+            h.setStrokeStyle(TouchHelper.STROKE_STYLE_PENCIL)
+            h.setStrokeWidth(view.baseStrokeWidth)
+            h.setStrokeColor(Color.BLACK)
+            h.setRawDrawingRenderEnabled(false)
+            h.setRawDrawingEnabled(true)
+            touchHelper = h
         }.isSuccess
         Log.i(TAG, "attach: limit=$limit touchHelper=${if (touchHelper != null) "ok" else "null"} ok=$ok")
         if (!ok) {
@@ -91,12 +108,17 @@ class DiaryController(
         EInk.beginAnimation(view)
     }
 
+    /** Forward MotionEvents to the pen helper. The helper's own OnTouchListener is
+     *  disabled (4-arg create in attach), so MainActivity's listener must feed it. */
+    fun forwardTouchToPen(event: MotionEvent) {
+        touchHelper?.onTouchEvent(event)
+    }
+
     /** Resume writing: re-enable raw pen input, only in the writing state. Called when the
      *  window regains focus / a dialog is dismissed. */
     fun onResume() {
         Log.i(TAG, "onResume: state=$state touchHelper=${touchHelper != null}")
         if (state == State.WRITING) {
-            touchHelper?.setRawDrawingRenderEnabled(true)
             touchHelper?.setRawDrawingEnabled(true)
         }
     }
@@ -142,9 +164,9 @@ class DiaryController(
             view.post {
                 view.removeCallbacks(idleRunnable)
                 pendingPoints.clear()
-                view.beginLiveStroke()
                 pendingPoints.add(p)
-                view.addLivePoint(p)
+                // Live ink is drawn by the hardware render layer; the app only collects
+                // points and renders the finished stroke on pen-up.
             }
         }
 
@@ -152,7 +174,6 @@ class DiaryController(
             val p = StrokePoint(point.x, point.y, normalizePressure(point.pressure))
             view.post {
                 pendingPoints.add(p)
-                view.addLivePoint(p)   // live partial draw + local fast refresh
             }
         }
 
@@ -173,9 +194,24 @@ class DiaryController(
                     view.addStroke(Stroke(ArrayList(pendingPoints)))
                 }
                 pendingPoints.clear()
-                view.endLiveStroke()   // clear live stroke and redraw (final stroke is in strokes)
+                // The hardware preview clears on pen-up; repaint the finished stroke with
+                // the app's own rendering. onPenUpRefresh fires at the exact moment if the
+                // firmware supports it — fall back to a delayed refresh if it never comes.
+                pendingPenUpRefresh = true
+                view.postDelayed({
+                    if (pendingPenUpRefresh) {
+                        pendingPenUpRefresh = false
+                        EInk.animateFrame(view)
+                    }
+                }, 120)
                 scheduleIdleCheck()
             }
+        }
+
+        override fun onPenUpRefresh(rect: RectF?) {
+            if (!pendingPenUpRefresh) return
+            pendingPenUpRefresh = false
+            view.post { EInk.animateFrame(view) }
         }
 
         override fun onBeginRawErasing(shortcut: Boolean, point: TouchPoint) {

@@ -26,8 +26,16 @@ class OpenAiOracle(
 
         val body = JSONObject()
             .put("model", model)
-            .put(
-                "messages",
+        // GLM 4.5+/5.x are reasoning models: without this they "think" for seconds before
+        // replying (measured 10s vs 1.2s for a one-line diary reply). Only sent to known
+        // GLM endpoints — strict OpenAI-compatible servers reject unknown top-level fields.
+        if (baseUrl.contains("bigmodel", ignoreCase = true) ||
+            baseUrl.contains("z.ai", ignoreCase = true)
+        ) {
+            body.put("thinking", JSONObject().put("type", "disabled"))
+        }
+        body.put(
+            "messages",
                 JSONArray()
                     .put(
                         JSONObject()
