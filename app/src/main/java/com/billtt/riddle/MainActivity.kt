@@ -33,6 +33,8 @@ class MainActivity : Activity() {
         setContentView(diaryView)
 
         // Long-press with a finger -> settings; any touch during linger -> skip the wait.
+        // The pen helper runs with its own listener disabled (see DiaryController.attach),
+        // so this listener stays in place and forwards every event to the helper.
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onLongPress(e: MotionEvent) {
                 showSettingsDialog()
@@ -54,6 +56,7 @@ class MainActivity : Activity() {
     }
 
     private fun handleTouch(event: MotionEvent): Boolean {
+        controller.forwardTouchToPen(event)
         gestureDetector.onTouchEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             controller.requestSkipLinger()
