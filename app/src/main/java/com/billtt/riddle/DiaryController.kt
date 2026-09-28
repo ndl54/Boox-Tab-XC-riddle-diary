@@ -18,6 +18,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -38,6 +39,8 @@ class DiaryController(
     private val activity: Activity,
     private val view: DiaryView,
     private val prefs: Prefs,
+    val engine: ChatEngine,
+    val onChanged: () -> Unit,
 ) {
 
     enum class State { WRITING, ABSORBING, AWAITING_REPLY, REVEALING, LINGERING, FADING_REPLY }
@@ -48,6 +51,7 @@ class DiaryController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var touchHelper: TouchHelper? = null
     private var cycleJob: Job? = null
+    private var resumed = true
     @Volatile private var skipLingerRequested = false
 
     /** Set on pen-up; onPenUpRefresh (exact moment the hardware preview clears) beats the
@@ -91,7 +95,7 @@ class DiaryController(
             h.enableFingerTouch(false)          // stylus only: palm/finger touches must not draw
             h.onlyEnableFingerTouch(false)
             h.setStrokeColor(Color.BLACK)
-            h.setLimitRect(limit, ArrayList())
+            h.setLimitRect(limit, arrayListOf(Rect((view.width - 180 * view.resources.displayMetrics.density).toInt(), (view.height - 48 * view.resources.displayMetrics.density).toInt(), view.width, view.height)))
             h.openRawDrawing()
             h.setStrokeStyle(TouchHelper.STROKE_STYLE_PENCIL)
             h.setStrokeWidth(view.baseStrokeWidth)
@@ -117,6 +121,7 @@ class DiaryController(
     /** Resume writing: re-enable raw pen input, only in the writing state. Called when the
      *  window regains focus / a dialog is dismissed. */
     fun onResume() {
+        resumed = true
         Log.i(TAG, "onResume: state=$state touchHelper=${touchHelper != null}")
         if (state == State.WRITING) {
             touchHelper?.setRawDrawingEnabled(true)
@@ -124,6 +129,8 @@ class DiaryController(
     }
 
     fun onPause() {
+        resumed = false
+        if (state == State.WRITING) saveDraft()
         touchHelper?.setRawDrawingEnabled(false)
         view.removeCallbacks(idleRunnable)
     }
@@ -139,7 +146,7 @@ class DiaryController(
     val debugTouchFallback: Boolean get() = touchHelper == null
 
     fun debugAddPoint(x: Float, y: Float, pressure: Float, up: Boolean) {
-        if (state != State.WRITING) return
+        if (state != State.WRITING || !resumed) return
         pendingPoints.add(StrokePoint(x, y, pressure))
         if (up) {
             view.addStroke(Stroke(ArrayList(pendingPoints)))
@@ -162,6 +169,7 @@ class DiaryController(
         override fun onBeginRawDrawing(shortcut: Boolean, point: TouchPoint) {
             val p = StrokePoint(point.x, point.y, normalizePressure(point.pressure))
             view.post {
+                if (state != State.WRITING || !resumed) return@post
                 view.removeCallbacks(idleRunnable)
                 pendingPoints.clear()
                 pendingPoints.add(p)
@@ -173,6 +181,7 @@ class DiaryController(
         override fun onRawDrawingTouchPointMoveReceived(point: TouchPoint) {
             val p = StrokePoint(point.x, point.y, normalizePressure(point.pressure))
             view.post {
+                if (state != State.WRITING || !resumed) return@post
                 pendingPoints.add(p)
             }
         }
@@ -182,6 +191,7 @@ class DiaryController(
                 StrokePoint(it.x, it.y, normalizePressure(it.pressure))
             }
             view.post {
+                if (state != State.WRITING || !resumed) return@post
                 view.addStroke(Stroke(pts))
                 pendingPoints.clear()
             }
@@ -190,6 +200,7 @@ class DiaryController(
         override fun onEndRawDrawing(outLimitRegion: Boolean, point: TouchPoint) {
             Log.i(TAG, "onEndRawDrawing strokes=${view.strokes.size} pending=${pendingPoints.size}")
             view.post {
+                if (state != State.WRITING || !resumed) return@post
                 if (view.strokes.isEmpty() && pendingPoints.size >= 2) {
                     view.addStroke(Stroke(ArrayList(pendingPoints)))
                 }
@@ -223,6 +234,7 @@ class DiaryController(
         override fun onRawErasingTouchPointListReceived(pointList: TouchPointList) {
             val pts = pointList.points.map { StrokePoint(it.x, it.y, 1f) }
             view.post {
+                if (state != State.WRITING || !resumed) return@post
                 if (view.eraseAt(pts, ERASER_RADIUS)) refreshAfterErase()
                 scheduleIdleCheck()
             }
@@ -242,15 +254,17 @@ class DiaryController(
         view.invalidate()          // redraw remaining strokes (erased ones are gone)
         EInk.fullRefresh(view)     // GC full refresh to clear ghosting of erased ink
         view.postDelayed({
-            if (state == State.WRITING) touchHelper?.setRawDrawingEnabled(true)
+            if (state == State.WRITING && resumed) touchHelper?.setRawDrawingEnabled(true)
         }, 300)
     }
 
     // ------------------------------------------------------------- idle detection
 
     private fun scheduleIdleCheck() {
+        if (state != State.WRITING) return
         view.removeCallbacks(idleRunnable)
-        if (state == State.WRITING && view.strokes.isNotEmpty()) {
+        saveDraft()
+        if (resumed && prefs.autoSend && state == State.WRITING && view.strokes.isNotEmpty()) {
             view.postDelayed(idleRunnable, IDLE_MS)
         }
     }
@@ -262,54 +276,91 @@ class DiaryController(
 
     // --------------------------------------------------------- main cycle (one round)
 
-    private fun startCycle() {
-        state = State.ABSORBING
-        skipLingerRequested = false
+    fun saveDraft() {
+        if (state != State.WRITING) return
+        engine.chat.draft = org.json.JSONArray(view.strokes.map { stroke ->
+            org.json.JSONArray(stroke.points.map { org.json.JSONArray(listOf(it.x, it.y, it.pressure)) })
+        })
+        engine.save()
+    }
+
+    fun restoreDraft() {
+        view.clearStrokes(); view.clearReply()
+        val draft = engine.chat.draft
+        for (i in 0 until draft.length()) {
+            val points = draft.getJSONArray(i)
+            view.addStroke(Stroke((0 until points.length()).map { j ->
+                val pt = points.getJSONArray(j)
+                StrokePoint(pt.getDouble(0).toFloat(), pt.getDouble(1).toFloat(), pt.getDouble(2).toFloat())
+            }))
+        }
+        view.invalidate(); onChanged()
+    }
+
+    fun sendText(text: String) = startCycle(text = text)
+    fun sendPage() { if (view.strokes.isNotEmpty()) startCycle() }
+    fun retry() { if (engine.chat.turns.lastOrNull()?.role == "user") startCycle(retry = true) }
+    fun saveNote() {
+        if (state != State.WRITING || view.strokes.isEmpty()) return
+        engine.note(view.capturePagePng(), activity.getString(R.string.handwritten_note))
+        view.clearStrokes(); EInk.fullRefresh(view); onChanged()
+    }
+    fun turnPage(session: ChatSession? = null) {
+        if (state != State.WRITING) return
+        saveDraft(); view.removeCallbacks(idleRunnable); touchHelper?.setRawDrawingEnabled(false); state = State.ABSORBING
+        scope.launch {
+            try {
+                for (i in 1..6) { view.pageTurn = i / 6f; EInk.animateFrame(view); delay(90) }
+                if (session == null) engine.newChat() else engine.select(session)
+                restoreDraft()
+            } finally {
+                view.pageTurn = 0f; state = State.WRITING
+                if (resumed) touchHelper?.setRawDrawingEnabled(true)
+                EInk.fullRefresh(view); onChanged()
+            }
+        }
+    }
+    fun compact() {
+        if (state != State.WRITING) return
+        view.removeCallbacks(idleRunnable); touchHelper?.setRawDrawingEnabled(false); state = State.AWAITING_REPLY; onChanged()
+        scope.launch {
+            try { withContext(Dispatchers.IO) { val active = coroutineContext; engine.compact(checkActive = { active.ensureActive() }) } }
+            catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; silentReply(e) }
+            finally { state = State.WRITING; if (resumed) touchHelper?.setRawDrawingEnabled(true); onChanged() }
+        }
+    }
+
+    private fun startCycle(text: String? = null, retry: Boolean = false) {
+        if (state != State.WRITING) return
+        if (!prefs.configured) { Toast.makeText(activity, R.string.toast_need_key, Toast.LENGTH_LONG).show(); return }
+        view.removeCallbacks(idleRunnable)
+        saveDraft()
+        val png = if (!retry && view.strokes.isNotEmpty()) view.capturePagePng() else null
+        state = State.AWAITING_REPLY
         touchHelper?.setRawDrawingEnabled(false)
-
+        view.clearReply(); onChanged()
         cycleJob = scope.launch {
-            // Take over the on-screen ink with software rendering (same content as live ink).
-            EInk.animateFrame(view)
-            delay(FRAME_MS)
-
-            // Fire the AI request immediately, so recognition runs in parallel with the absorb animation.
-            val png = withContext(Dispatchers.Default) { view.capturePagePng() }
-            val oracle = OracleFactory.create(prefs)
-            val replyDeferred = oracle?.let {
-                async(Dispatchers.IO) {
-                    runCatching { it.ask(png) }
-                }
+            try {
+                val reply = withContext(Dispatchers.IO) { val active = coroutineContext; engine.answer(png, text ?: OraclePrompts.USER_INSTRUCTION, retry) { active.ensureActive() } }
+                state = State.ABSORBING
+                animateAbsorb(); view.clearStrokes()
+                // The full response remains selectable/scrollable in history.
+                state = State.REVEALING
+                view.setReply(if (reply.length > 900) reply.take(850) + "…\n" + activity.getString(R.string.reply_preview_tail) else reply)
+                animateReveal()
+                state = State.LINGERING
+                skipLingerRequested = false
+                lingerInterruptibly(9000)
+                view.clearReply()
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                silentReply(e)
+                // Archived question can be retried; handwriting remains visible on failure.
+            } finally {
+                state = State.WRITING
+                if (resumed) touchHelper?.setRawDrawingEnabled(true)
+                EInk.fullRefresh(view); onChanged()
             }
-
-            animateAbsorb()
-            view.clearStrokes()
-            EInk.fullRefresh(view)
-
-            state = State.AWAITING_REPLY
-            val reply: String = when {
-                replyDeferred == null -> activity.getString(R.string.toast_need_key)
-                else -> {
-                    val result = runCatching {
-                        withTimeout(REPLY_TIMEOUT_MS) { replyDeferred.await() }
-                    }.getOrNull()
-                    result?.getOrNull() ?: silentReply(result?.exceptionOrNull())
-                }
-            }
-
-            state = State.REVEALING
-            view.setReply(reply)
-            animateReveal()
-
-            state = State.LINGERING
-            lingerInterruptibly(lingerMillisFor(view.replyWords.size))
-
-            state = State.FADING_REPLY
-            animateReplyFade()
-            view.clearReply()
-            EInk.fullRefresh(view)
-
-            state = State.WRITING
-            touchHelper?.setRawDrawingEnabled(true)
         }
     }
 

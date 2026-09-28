@@ -21,6 +21,7 @@ class MainActivity : Activity() {
     private lateinit var diaryView: DiaryView
     private lateinit var controller: DiaryController
     private lateinit var prefs: Prefs
+    private lateinit var companionUi: CompanionUi
     private lateinit var gestureDetector: GestureDetector
 
     override fun attachBaseContext(base: android.content.Context) {
@@ -33,15 +34,26 @@ class MainActivity : Activity() {
 
         prefs = Prefs(this)
         diaryView = DiaryView(this)
-        controller = DiaryController(this, diaryView, prefs)
-        setContentView(diaryView)
+        val engine = ChatEngine(this, prefs)
+        controller = DiaryController(this, diaryView, prefs, engine) { if (::companionUi.isInitialized) companionUi.refresh() }
+        companionUi = CompanionUi(this, controller, { showSettingsDialog() }, { settingsOpen = it })
+        val frame = android.widget.FrameLayout(this)
+        frame.addView(diaryView)
+        frame.addView(companionUi.badge, android.widget.FrameLayout.LayoutParams(
+            android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+            android.view.Gravity.BOTTOM or android.view.Gravity.END))
+        setContentView(frame)
+        engine.refreshEstimate()
+        controller.restoreDraft()
+        companionUi.refresh()
+        companionUi.exportSession = savedInstanceState?.getString("export_session")
 
         // Long-press with a finger -> settings; any touch during linger -> skip the wait.
         // The pen helper runs with its own listener disabled (see DiaryController.attach),
         // so this listener stays in place and forwards every event to the helper.
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onLongPress(e: MotionEvent) {
-                showSettingsDialog()
+                if (e.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER) companionUi.menu()
             }
         })
         diaryView.setOnTouchListener { _, event -> handleTouch(event) }
@@ -61,9 +73,21 @@ class MainActivity : Activity() {
         if (!prefs.configured) showSettingsDialog()
     }
 
+    private var swipeX = 0f
+    private var swipeY = 0f
+
     private fun handleTouch(event: MotionEvent): Boolean {
+        val finger = event.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER
+        if (finger) {
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) controller.requestSkipLinger()
+            gestureDetector.onTouchEvent(event)
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) { swipeX = event.x; swipeY = event.y }
+            if (event.actionMasked == MotionEvent.ACTION_UP && !settingsOpen &&
+                swipeX > diaryView.width * 0.85f && swipeX - event.x > diaryView.width * 0.30f &&
+                kotlin.math.abs(event.y - swipeY) < diaryView.height * 0.15f) controller.turnPage()
+            return true
+        }
         controller.forwardTouchToPen(event)
-        gestureDetector.onTouchEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             controller.requestSkipLinger()
         }
@@ -72,7 +96,7 @@ class MainActivity : Activity() {
             (event.actionMasked == MotionEvent.ACTION_MOVE || event.actionMasked == MotionEvent.ACTION_UP)
         ) {
             controller.debugAddPoint(
-                event.x, event.y, event.pressure.coerceIn(0.1f, 1f) * DiaryController.MAX_PRESSURE,
+                event.x, event.y, event.pressure.coerceIn(0.1f, 1f),
                 up = event.actionMasked == MotionEvent.ACTION_UP,
             )
         }
@@ -103,9 +127,25 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        companionUi.close()
         codexSettings?.close()
         super.onDestroy()
         if (::controller.isInitialized) controller.onDestroy()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("export_session", companionUi.exportSession)
+    }
+    @Deprecated("Android activity result callback")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == CompanionUi.EXPORT_REQUEST && resultCode == RESULT_OK) {
+            val text = companionUi.exportText() ?: return
+            runCatching {
+                contentResolver.openOutputStream(data?.data ?: return)?.use { it.write(text.toByteArray()) }
+            }.onFailure { Toast.makeText(this, UiError.describe(this, it), Toast.LENGTH_LONG).show() }
+        }
     }
 
     private fun hideSystemUi() {
@@ -140,6 +180,26 @@ class MainActivity : Activity() {
         }
         layout.addView(language)
         var languageChanged = false
+
+        layout.addView(TextView(this).apply { text = getString(R.string.role_label) })
+        val role = android.widget.Spinner(this).apply {
+            adapter = android.widget.ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                Roles.names.map { getString(it) })
+            setSelection(controller.engine.chat.role.coerceIn(0, Roles.names.lastIndex))
+        }
+        val custom = EditText(this).apply {
+            hint = getString(R.string.custom_prompt_hint); minLines = 3
+            setText(controller.engine.chat.custom)
+        }
+        val continuous = android.widget.CheckBox(this).apply { text = getString(R.string.continuous); isChecked = prefs.continuous }
+        val autoSend = android.widget.CheckBox(this).apply { text = getString(R.string.auto_send); isChecked = prefs.autoSend }
+        val budget = EditText(this).apply {
+            hint = getString(R.string.context_budget); inputType = InputType.TYPE_CLASS_NUMBER
+            setText(prefs.contextBudget.toString())
+        }
+        layout.addView(role); layout.addView(custom); layout.addView(continuous); layout.addView(autoSend)
+        layout.addView(TextView(this).apply { text = getString(R.string.context_budget) }); layout.addView(budget)
+        layout.addView(TextView(this).apply { text = getString(R.string.companion_help); textSize = 13f })
 
         // ---- backend selection ----
         val anthropicRadio = RadioButton(this).apply {
@@ -238,6 +298,16 @@ class MainActivity : Activity() {
                 val chosenLanguage = AppLanguage.choices[language.selectedItemPosition]
                 languageChanged = chosenLanguage != AppLanguage.selected(this)
                 if (languageChanged) AppLanguage.apply(this, chosenLanguage)
+                prefs.role = role.selectedItemPosition
+                prefs.customPrompt = custom.text.toString()
+                prefs.continuous = continuous.isChecked
+                prefs.autoSend = autoSend.isChecked
+                prefs.contextBudget = budget.text.toString().toIntOrNull() ?: 32000
+                controller.engine.chat.role = prefs.role
+                controller.engine.chat.custom = prefs.customPrompt
+                controller.engine.save()
+                controller.engine.refreshEstimate()
+                companionUi.refresh()
                 prefs.provider = when (providerGroup.checkedRadioButtonId) {
                     codexRadio.id -> Prefs.PROVIDER_CODEX
                     openaiRadio.id -> Prefs.PROVIDER_OPENAI

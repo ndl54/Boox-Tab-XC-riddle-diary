@@ -6,9 +6,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 
 class CodexOracle(private val auth: CodexAuth, private val model: String) : Oracle {
-    override fun ask(pagePng: ByteArray): String {
+    override fun ask(request: AiRequest): String {
         if (model.isBlank()) throw UiError(R.string.error_choose_model)
-        val body = CodexProtocol.request(model, pagePng).toString()
+        val body = ConversationWire.codex(model, request).toString()
             .toRequestBody("application/json".toMediaType())
         return auth.authorized {
             Request.Builder().url("${CodexProtocol.API}/responses")

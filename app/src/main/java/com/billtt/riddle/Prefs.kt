@@ -61,6 +61,25 @@ class Prefs(context: Context) {
             sp.edit().putString("codex_models", array.toString()).apply()
         }
 
+    var activeChat: String
+        get() = sp.getString("active_chat", "").orEmpty()
+        set(v) = sp.edit().putString("active_chat", v).apply()
+    var role: Int
+        get() = sp.getInt("role", 1)
+        set(v) = sp.edit().putInt("role", v).apply()
+    var customPrompt: String
+        get() = sp.getString("custom_prompt", "").orEmpty()
+        set(v) = sp.edit().putString("custom_prompt", v).apply()
+    var continuous: Boolean
+        get() = sp.getBoolean("continuous", true)
+        set(v) = sp.edit().putBoolean("continuous", v).apply()
+    var autoSend: Boolean
+        get() = sp.getBoolean("auto_send", false)
+        set(v) = sp.edit().putBoolean("auto_send", v).apply()
+    var contextBudget: Int
+        get() = sp.getInt("context_budget", 32000)
+        set(v) = sp.edit().putInt("context_budget", v.coerceIn(8000, 1000000)).apply()
+
     companion object {
         const val PROVIDER_ANTHROPIC = "anthropic"
         const val PROVIDER_CODEX = "codex"

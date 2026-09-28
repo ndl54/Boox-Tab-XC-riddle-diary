@@ -1,3 +1,17 @@
+## Companion edition 0.4.0 / Phiên bản đồng hành
+
+- Five presets: enchanted diary, work assistant, report analyst, reading tutor, and meeting notes; plus a custom prompt.
+- Persistent sessions with original handwriting, responses, drafts, retry, rename/delete and TXT export.
+- Continuous conversation across Anthropic, OpenAI-compatible APIs and Codex login; local-only notes never sent to AI.
+- Hold the page with a finger for all navigation. Settings are grouped in one item. Swipe left from the right edge to turn a page into a new chat.
+- Bottom-right estimated context budget and compression count; stylus hover/tap opens details. Compression preserves the full local archive.
+- English and Vietnamese. Manual send is the default; optional auto-send waits 2.8 seconds after pen-up.
+- Stable release signing and manual-only GitHub Actions: see [update and storage notes](docs/UPDATES.md).
+
+Verification: protocol, conversation persistence/compaction/privacy, and Android menu tests run locally. BOOX hardware latency, hover and page-turn rendering still require a real-device check.
+
+---
+
 # Riddle Diary for BOOX
 
 *(Chinese below / 中文在下方)*

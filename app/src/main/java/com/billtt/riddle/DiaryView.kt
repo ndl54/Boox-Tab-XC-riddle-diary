@@ -23,6 +23,8 @@ import java.io.ByteArrayOutputStream
  */
 class DiaryView(context: Context) : View(context) {
 
+    var pageTurn = 0f
+
     // ---- strokes ----
     val strokes = mutableListOf<Stroke>()
     val strokeAlphas = mutableListOf<Float>()
@@ -237,6 +239,19 @@ class DiaryView(context: Context) : View(context) {
             drawCurrent(canvas)
         }
         drawReply(canvas)
+        if (pageTurn > 0f) {
+            val edge = width * (1f - pageTurn)
+            val paint = Paint().apply { color = Color.WHITE }
+            canvas.drawRect(edge, 0f, width.toFloat(), height.toFloat(), paint)
+            paint.color = Color.LTGRAY
+            val fold = android.graphics.Path().apply {
+                moveTo(edge, 0f); lineTo((edge - width * .10f).coerceAtLeast(0f), height * .5f)
+                lineTo(edge, height.toFloat()); close()
+            }
+            canvas.drawPath(fold, paint)
+            paint.color = Color.DKGRAY; paint.strokeWidth = 2f
+            canvas.drawLine(edge, 0f, edge, height.toFloat(), paint)
+        }
     }
 
     /** Draw the stroke currently being written (full-ink black). */

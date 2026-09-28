@@ -3,6 +3,10 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+def signingPropertiesFile = file(System.getenv('BOOX_SIGNING_PROPERTIES') ?: "${System.getProperty('user.home')}/.config/boox-riddle-signing/keystore.properties")
+def signingProperties = new Properties()
+if (signingPropertiesFile.exists()) signingPropertiesFile.withInputStream { signingProperties.load(it) }
+
 android {
     namespace 'com.billtt.riddle'
     compileSdk 34
@@ -11,12 +15,24 @@ android {
         applicationId 'com.billtt.riddle'
         minSdk 28            // BOOX Note X2 出厂为 Android 11 (API 30)
         targetSdk 34
-        versionCode 3
-        versionName '0.3.0'
+        versionCode 4
+        versionName '0.4.0'
+    }
+
+    signingConfigs {
+        stableRelease {
+            if (signingPropertiesFile.exists()) {
+                storeFile file(signingProperties['storeFile'])
+                storePassword signingProperties['storePassword']
+                keyAlias signingProperties['keyAlias']
+                keyPassword signingProperties['keyPassword']
+            }
+        }
     }
 
     buildTypes {
         release {
+            if (signingPropertiesFile.exists()) signingConfig signingConfigs.stableRelease
             minifyEnabled false
         }
     }
@@ -46,6 +62,8 @@ android {
         }
     }
 
+    testOptions { unitTests.includeAndroidResources = true }
+
     lint {
         abortOnError false
     }
@@ -53,6 +71,7 @@ android {
 
 dependencies {
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.13'
     testImplementation 'org.json:json:20240303'
     // Onyx BOOX SDK：低延迟原始笔迹输入 + 电子墨水屏刷新控制。
     // 用 Boox-EinkDraw 实测零延迟的整套本地库（勿升 maven 新版）：

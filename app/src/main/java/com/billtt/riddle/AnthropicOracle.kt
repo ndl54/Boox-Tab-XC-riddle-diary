@@ -1,55 +1,28 @@
 package com.billtt.riddle
 
-import com.anthropic.client.okhttp.AnthropicOkHttpClient
-import com.anthropic.models.messages.Base64ImageSource
-import com.anthropic.models.messages.ContentBlockParam
-import com.anthropic.models.messages.ImageBlockParam
-import com.anthropic.models.messages.MessageCreateParams
-import com.anthropic.models.messages.TextBlockParam
-import java.time.Duration
-import java.util.Base64
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
-/** Anthropic backend: official Java SDK, Claude reads the handwritten page via vision. */
 class AnthropicOracle(private val apiKey: String, private val model: String) : Oracle {
-
-    override fun ask(pagePng: ByteArray): String {
-        val client = AnthropicOkHttpClient.builder()
-            .apiKey(apiKey)
-            .timeout(Duration.ofSeconds(120))
-            .build()
-        try {
-            val image = ImageBlockParam.builder()
-                .source(
-                    Base64ImageSource.builder()
-                        .mediaType(Base64ImageSource.MediaType.IMAGE_PNG)
-                        .data(Base64.getEncoder().encodeToString(pagePng))
-                        .build()
-                )
-                .build()
-
-            val params = MessageCreateParams.builder()
-                .model(model)
-                .maxTokens(300L)
-                .system(OraclePrompts.PERSONA)
-                .addUserMessageOfBlockParams(
-                    listOf(
-                        ContentBlockParam.ofImage(image),
-                        ContentBlockParam.ofText(
-                            TextBlockParam.builder().text(OraclePrompts.USER_INSTRUCTION).build()
-                        ),
-                    )
-                )
-                .build()
-
-            val response = client.messages().create(params)
-            val text = buildString {
-                for (block in response.content()) {
-                    block.text().ifPresent { append(it.text()) }
-                }
-            }.trim()
-            return text.ifEmpty { "……" }
-        } finally {
-            runCatching { client.close() }
+    override fun ask(request: AiRequest): String {
+        val body = JSONObject().put("model", model).put("max_tokens", 4096)
+            .put("system", request.prompt).put("messages", ConversationWire.anthropic(request))
+        return client.newCall(Request.Builder().url("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", apiKey).header("anthropic-version", "2023-06-01")
+            .post(body.toString().toRequestBody("application/json".toMediaType())).build()).execute().use { response ->
+            if (!response.isSuccessful) throw UiError(R.string.error_http, response.code)
+            val result = JSONObject(response.body?.string() ?: throw UiError(R.string.error_response_empty))
+            if (result.optString("stop_reason") == "max_tokens") throw UiError(R.string.error_reply_incomplete)
+            val content = result.getJSONArray("content")
+            (0 until content.length()).joinToString("\n") { content.getJSONObject(it).optString("text") }
+                .trim().ifEmpty { throw UiError(R.string.error_reply_empty) }
         }
+    }
+    companion object {
+        private val client = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS).readTimeout(120, TimeUnit.SECONDS).build()
     }
 }

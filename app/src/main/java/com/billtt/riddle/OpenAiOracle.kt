@@ -21,46 +21,10 @@ class OpenAiOracle(
     private val baseUrl: String,
 ) : Oracle {
 
-    override fun ask(pagePng: ByteArray): String {
-        val dataUri = "data:image/png;base64," + Base64.getEncoder().encodeToString(pagePng)
-
-        val body = JSONObject()
-            .put("model", model)
-        // GLM 4.5+/5.x are reasoning models: without this they "think" for seconds before
-        // replying (measured 10s vs 1.2s for a one-line diary reply). Only sent to known
-        // GLM endpoints — strict OpenAI-compatible servers reject unknown top-level fields.
-        if (baseUrl.contains("bigmodel", ignoreCase = true) ||
-            baseUrl.contains("z.ai", ignoreCase = true)
-        ) {
+    override fun ask(input: AiRequest): String {
+        val body = JSONObject().put("model", model).put("messages", ConversationWire.openai(input))
+        if (baseUrl.contains("bigmodel", true) || baseUrl.contains("z.ai", true))
             body.put("thinking", JSONObject().put("type", "disabled"))
-        }
-        body.put(
-            "messages",
-                JSONArray()
-                    .put(
-                        JSONObject()
-                            .put("role", "system")
-                            .put("content", OraclePrompts.PERSONA)
-                    )
-                    .put(
-                        JSONObject()
-                            .put("role", "user")
-                            .put(
-                                "content",
-                                JSONArray()
-                                    .put(
-                                        JSONObject()
-                                            .put("type", "image_url")
-                                            .put("image_url", JSONObject().put("url", dataUri))
-                                    )
-                                    .put(
-                                        JSONObject()
-                                            .put("type", "text")
-                                            .put("text", OraclePrompts.USER_INSTRUCTION)
-                                    )
-                            )
-                    )
-            )
 
         val request = Request.Builder()
             .url(baseUrl.trimEnd('/') + "/chat/completions")
@@ -73,13 +37,15 @@ class OpenAiOracle(
             if (!response.isSuccessful) {
                 throw UiError(R.string.error_http, response.code)
             }
+            val choice = JSONObject(text).getJSONArray("choices").getJSONObject(0)
+            if (choice.optString("finish_reason") == "length") throw UiError(R.string.error_reply_incomplete)
             val reply = JSONObject(text)
                 .getJSONArray("choices")
                 .getJSONObject(0)
                 .getJSONObject("message")
                 .getString("content")
                 .trim()
-            return reply.ifEmpty { "……" }
+            return reply.ifEmpty { throw UiError(R.string.error_reply_empty) }
         }
     }
 

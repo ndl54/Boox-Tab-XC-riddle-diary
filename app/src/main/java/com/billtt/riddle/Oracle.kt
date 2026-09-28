@@ -6,7 +6,7 @@ package com.billtt.riddle
  * Blocking call — invoke on an IO thread.
  */
 interface Oracle {
-    fun ask(pagePng: ByteArray): String
+    fun ask(request: AiRequest): String
 }
 
 object OracleFactory {

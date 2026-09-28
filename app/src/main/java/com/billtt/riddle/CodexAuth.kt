@@ -85,7 +85,7 @@ class CodexAuth(private val store: CodexStore, private val context: android.cont
             .header("Authorization", "Bearer ${credentials.getString("access_token")}")
             .header("ChatGPT-Account-Id", credentials.getString("account_id"))
             .header("originator", "boox_riddle_diary")
-            .header("User-Agent", "boox_riddle_diary/0.3.0")
+            .header("User-Agent", "boox_riddle_diary/0.4.0")
             .build()).execute()
         var response = send()
         if (response.code == 401) {
@@ -171,7 +171,7 @@ class CodexAuth(private val store: CodexStore, private val context: android.cont
 
     private fun JSONObject.body() = toString().toRequestBody("application/json".toMediaType())
     private fun raw(url: String, body: RequestBody) = authClient.newCall(Request.Builder().url(url)
-        .header("originator", "boox_riddle_diary").header("User-Agent", "boox_riddle_diary/0.3.0")
+        .header("originator", "boox_riddle_diary").header("User-Agent", "boox_riddle_diary/0.4.0")
         .post(body).build()).execute()
     private fun json(url: String, body: RequestBody): JSONObject = raw(url, body).use {
         checkStatus(it)
