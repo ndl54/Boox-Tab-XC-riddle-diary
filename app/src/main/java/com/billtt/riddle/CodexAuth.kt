@@ -19,7 +19,7 @@ import java.net.ServerSocket
 import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
 
-class CodexAuth(private val store: CodexStore) {
+class CodexAuth(private val store: CodexStore, private val context: android.content.Context) {
     private val lock = Any()
     val connected: Boolean get() = store.read() != null
     val account: String get() = store.read()?.optString("email").orEmpty()
@@ -46,12 +46,12 @@ class CodexAuth(private val store: CodexStore) {
             ?: idClaims.optJSONObject("https://api.openai.com/auth")?.optString("chatgpt_account_id")
                 ?.takeIf { it.isNotBlank() }
             ?: old?.optString("account_id")?.takeIf { it.isNotBlank() }
-            ?: throw IOException("Codex account was not included in the login")
+            ?: throw UiError(R.string.error_login_no_account)
         val refresh = json.optString("refresh_token").ifBlank { old?.optString("refresh_token").orEmpty() }
-        if (access.isBlank() || refresh.isBlank()) throw IOException("Incomplete Codex login response")
+        if (access.isBlank() || refresh.isBlank()) throw UiError(R.string.error_login_incomplete)
         val expires = if (json.optLong("expires_in") > 0) System.currentTimeMillis() + json.getLong("expires_in") * 1000
             else claims.optLong("exp") * 1000
-        if (expires <= System.currentTimeMillis()) throw IOException("Codex returned an expired login")
+        if (expires <= System.currentTimeMillis()) throw UiError(R.string.error_login_expired_response)
         return JSONObject().put("access_token", access).put("refresh_token", refresh)
             .put("expires_at", expires).put("account_id", accountId)
             .put("email", idClaims.optString("email").ifBlank {
@@ -62,7 +62,7 @@ class CodexAuth(private val store: CodexStore) {
 
     /** Serialize refresh and logout so rotating tokens cannot overwrite each other. */
     private fun session(rejectedToken: String? = null): JSONObject = synchronized(lock) {
-        val saved = store.read() ?: throw IOException("Please sign in to Codex in Settings")
+        val saved = store.read() ?: throw UiError(R.string.error_login_required)
         if (saved.getLong("expires_at") > System.currentTimeMillis() + 60_000 &&
             (rejectedToken == null || saved.getString("access_token") != rejectedToken)) return@synchronized saved
         try {
@@ -73,7 +73,7 @@ class CodexAuth(private val store: CodexStore) {
         } catch (e: HttpFailure) {
             if (e.status == 400 || e.status == 401) {
                 store.clear()
-                throw IOException("Codex login expired. Please sign in again.")
+                throw UiError(R.string.error_login_expired)
             }
             throw e
         }
@@ -85,7 +85,7 @@ class CodexAuth(private val store: CodexStore) {
             .header("Authorization", "Bearer ${credentials.getString("access_token")}")
             .header("ChatGPT-Account-Id", credentials.getString("account_id"))
             .header("originator", "boox_riddle_diary")
-            .header("User-Agent", "boox_riddle_diary/0.2.0")
+            .header("User-Agent", "boox_riddle_diary/0.3.0")
             .build()).execute()
         var response = send()
         if (response.code == 401) {
@@ -100,8 +100,8 @@ class CodexAuth(private val store: CodexStore) {
         Request.Builder().url("${CodexProtocol.API}/models?client_version=${CodexProtocol.CLIENT_VERSION}")
     }.use { response ->
         checkStatus(response)
-        CodexProtocol.models(JSONObject(response.body?.string() ?: throw IOException("Empty model list")))
-            .ifEmpty { throw IOException("No image-capable Codex models were returned for this account") }
+        CodexProtocol.models(JSONObject(response.body?.string() ?: throw UiError(R.string.error_models_empty)))
+            .ifEmpty { throw UiError(R.string.error_models_no_vision) }
     }
 
     suspend fun deviceLogin(showCode: suspend (String) -> Unit): JSONObject = withContext(Dispatchers.IO) {
@@ -127,7 +127,7 @@ class CodexAuth(private val store: CodexStore) {
             }
             delay(interval)
         }
-        throw IOException("Login code expired. Please start again.")
+        throw UiError(R.string.error_code_expired)
     }
 
     /** Loopback receiver is bound before opening the system browser and closed on every exit. */
@@ -135,7 +135,7 @@ class CodexAuth(private val store: CodexStore) {
         val verifier = CodexProtocol.randomSecret()
         val state = CodexProtocol.randomSecret()
         val server = try { ServerSocket(1455, 4, InetAddress.getByName("127.0.0.1")) }
-            catch (_: IOException) { throw IOException("Login port is busy. Use device code or try again.") }
+            catch (_: IOException) { throw UiError(R.string.error_login_port_busy) }
         server.use {
             it.soTimeout = 500
             openBrowser(CodexProtocol.authorizationUrl(verifier, state))
@@ -149,7 +149,7 @@ class CodexAuth(private val store: CodexStore) {
                         catch (_: IOException) { "" }
                     val target = line.split(' ').takeIf { parts -> parts.size == 3 && parts[0] == "GET" }?.get(1).orEmpty()
                     val result = runCatching { CodexProtocol.callbackCode(target, state) }
-                    val message = if (result.isSuccess) "Login received. Return to BOOX Diary to finish." else "Invalid or declined login. Return to BOOX Diary and try again."
+                    val message = android.text.TextUtils.htmlEncode(context.getString(if (result.isSuccess) R.string.callback_success else R.string.callback_failure))
                     val body = "<!doctype html><meta name=viewport content='width=device-width'><p>$message</p>".toByteArray()
                     runCatching {
                         incoming.getOutputStream().apply {
@@ -165,20 +165,20 @@ class CodexAuth(private val store: CodexStore) {
                     }
                 }
             }
-            throw IOException("Browser login timed out. Please start again.")
+            throw UiError(R.string.error_browser_timeout)
         }
     }
 
     private fun JSONObject.body() = toString().toRequestBody("application/json".toMediaType())
     private fun raw(url: String, body: RequestBody) = authClient.newCall(Request.Builder().url(url)
-        .header("originator", "boox_riddle_diary").header("User-Agent", "boox_riddle_diary/0.2.0")
+        .header("originator", "boox_riddle_diary").header("User-Agent", "boox_riddle_diary/0.3.0")
         .post(body).build()).execute()
     private fun json(url: String, body: RequestBody): JSONObject = raw(url, body).use {
         checkStatus(it)
-        JSONObject(it.body?.string() ?: throw IOException("Empty login response"))
+        JSONObject(it.body?.string() ?: throw UiError(R.string.error_login_empty))
     }
 
-    class HttpFailure(val status: Int, message: String) : IOException(message)
+    class HttpFailure(val status: Int, resource: Int, vararg args: Any) : UiError(resource, *args)
     companion object {
         // Never follow a redirect while carrying OAuth credentials.
         val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
@@ -186,13 +186,16 @@ class CodexAuth(private val store: CodexStore) {
             .callTimeout(150, TimeUnit.SECONDS).build()
         private val authClient = client.newBuilder().callTimeout(30, TimeUnit.SECONDS).build()
         fun checkStatus(response: Response) {
-            if (!response.isSuccessful) throw HttpFailure(response.code, when (response.code) {
-                401 -> "Codex session was rejected. Please sign in again."
-                403 -> "Codex access denied. Check your plan/workspace permissions or try browser login."
-                404 -> "Codex endpoint unavailable. For login, try the other sign-in method."
-                429 -> "Codex usage limit reached. Please try again later."
-                else -> "Codex request failed (HTTP ${response.code}). Please try again."
-            })
+            if (!response.isSuccessful) {
+                val resource = when (response.code) {
+                    401 -> R.string.error_session_rejected
+                    403 -> R.string.error_access_denied
+                    404 -> R.string.error_endpoint_missing
+                    429 -> R.string.error_quota
+                    else -> R.string.error_http
+                }
+                throw HttpFailure(response.code, resource, response.code)
+            }
         }
     }
 }

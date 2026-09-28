@@ -3,7 +3,7 @@ package com.billtt.riddle
 import android.content.Context
 
 class Prefs(context: Context) {
-    val codexAuth = CodexAuth(CodexStore(context.applicationContext))
+    val codexAuth = CodexAuth(CodexStore(context.applicationContext), context)
     private val sp = context.getSharedPreferences("riddle", Context.MODE_PRIVATE)
 
     /** Backend selection: PROVIDER_ANTHROPIC / PROVIDER_OPENAI / PROVIDER_CODEX */

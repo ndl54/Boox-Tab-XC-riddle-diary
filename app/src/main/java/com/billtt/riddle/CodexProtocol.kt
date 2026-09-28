@@ -41,16 +41,16 @@ object CodexProtocol {
             .build().toString()
 
     fun callbackCode(target: String, expectedState: String): String {
-        if (!target.startsWith("/auth/callback?")) throw IOException("Invalid callback path")
+        if (!target.startsWith("/auth/callback?")) throw UiError(R.string.error_callback_path)
         val url = ("http://localhost:1455$target").toHttpUrl()
         val states = url.queryParameterValues("state")
         if (states.size != 1 || !MessageDigest.isEqual(
                 states[0].orEmpty().toByteArray(), expectedState.toByteArray())) {
-            throw IOException("Invalid login state. Please restart login.")
+            throw UiError(R.string.error_callback_state)
         }
-        if (url.queryParameter("error") != null) throw IOException("Login was declined. Please try again.")
+        if (url.queryParameter("error") != null) throw UiError(R.string.error_login_declined)
         return url.queryParameterValues("code").singleOrNull()?.takeIf { it.isNotBlank() }
-            ?: throw IOException("No authorization code received")
+            ?: throw UiError(R.string.error_login_no_code)
     }
 
     fun claims(jwt: String): JSONObject = runCatching {
@@ -94,14 +94,14 @@ object CodexProtocol {
             when (json.optString("type")) {
                 "response.output_text.delta" -> {
                     deltas.append(json.optString("delta"))
-                    if (deltas.length > 100_000) throw IOException("Codex reply is too large")
+                    if (deltas.length > 100_000) throw UiError(R.string.error_reply_large)
                 }
                 "error", "response.failed", "response.incomplete" ->
-                    throw IOException("Codex could not finish the reply. Please try again or choose another model.")
+                    throw UiError(R.string.error_reply_failed)
                 "response.completed", "response.done" -> {
                     val response = json.optJSONObject("response")
                     if (response != null && response.optString("status", "completed") != "completed")
-                        throw IOException("Codex reply did not complete")
+                        throw UiError(R.string.error_reply_incomplete)
                     val output = response?.optJSONArray("output") ?: JSONArray()
                     val text = buildString {
                         for (i in 0 until output.length()) {
@@ -117,7 +117,7 @@ object CodexProtocol {
                             }
                         }
                     }.ifBlank { deltas.toString() }.trim()
-                    return text.ifEmpty { throw IOException("Codex returned no text") }
+                    return text.ifEmpty { throw UiError(R.string.error_reply_empty) }
                 }
             }
             return null
@@ -128,10 +128,10 @@ object CodexProtocol {
             else if (line.startsWith("data:")) {
                 if (event.isNotEmpty()) event.append('\n')
                 event.append(line.removePrefix("data:").trimStart())
-                if (event.length > 2_000_000) throw IOException("Codex event is too large")
+                if (event.length > 2_000_000) throw UiError(R.string.error_event_large)
             }
         }
         consume()?.let { return it }
-        throw IOException("Codex connection ended before the reply completed")
+        throw UiError(R.string.error_reply_disconnected)
     }
 }

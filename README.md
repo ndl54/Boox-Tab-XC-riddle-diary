@@ -111,3 +111,7 @@ adb shell pm enable com.billtt.riddle
 ## Codex / ChatGPT subscription login
 
 The fork supports **Codex (ChatGPT login)** directly on BOOX, with device-code and browser sign-in, an account model picker, encrypted session storage, and automatic token refresh. See [setup and implementation notes](docs/codex-login.md).
+
+## English and Vietnamese (0.3.0)
+
+All app-owned interface text, connection errors, and the local login callback page support English and Vietnamese. Open Settings → App language to choose Follow device language, English, or Tiếng Việt, then Save. Other device languages fall back to English. The choice persists across launches; changing it refreshes Settings without discarding handwriting. AI replies continue to follow the language of the handwritten message. The OpenAI-hosted sign-in page is controlled by OpenAI.

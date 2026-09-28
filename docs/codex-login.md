@@ -37,3 +37,7 @@ Unit tests cover PKCE, callback state validation, model filtering, image request
 - [OpenClaw device-code flow](https://github.com/openclaw/openclaw/blob/main/extensions/openai/openai-chatgpt-device-code.ts)
 - [OpenClaw token exchange and refresh](https://github.com/openclaw/openclaw/blob/main/extensions/openai/openai-chatgpt-oauth-token.runtime.ts)
 - [Codex model catalog](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/models.rs)
+
+## Language selection (0.3.0)
+
+Settings → App language → English / Tiếng Việt / Follow device language → Save. The app refreshes Settings immediately and remembers the choice. Both languages cover provider settings, login controls, status, error messages and the app-owned browser callback. Model identifiers, URLs and provider names retain their official spelling.

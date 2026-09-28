@@ -315,7 +315,7 @@ class DiaryController(
 
     private fun silentReply(cause: Throwable?): String {
         cause?.let {
-            Toast.makeText(activity, "API error: ${it.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(activity, activity.getString(R.string.error_title, UiError.describe(activity, it)), Toast.LENGTH_LONG).show()
         }
         return "……"
     }

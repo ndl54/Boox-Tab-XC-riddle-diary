@@ -71,7 +71,7 @@ class OpenAiOracle(
         client.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                throw IOException("HTTP ${response.code}: ${extractError(text)}")
+                throw UiError(R.string.error_http, response.code)
             }
             val reply = JSONObject(text)
                 .getJSONArray("choices")
@@ -82,10 +82,6 @@ class OpenAiOracle(
             return reply.ifEmpty { "……" }
         }
     }
-
-    private fun extractError(body: String): String = runCatching {
-        JSONObject(body).getJSONObject("error").getString("message")
-    }.getOrDefault(body.take(200))
 
     companion object {
         const val DEFAULT_BASE_URL = "https://api.openai.com/v1"

@@ -23,6 +23,10 @@ class MainActivity : Activity() {
     private lateinit var prefs: Prefs
     private lateinit var gestureDetector: GestureDetector
 
+    override fun attachBaseContext(base: android.content.Context) {
+        super.attachBaseContext(AppLanguage.wrap(base))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -127,6 +131,16 @@ class MainActivity : Activity() {
             setPadding(pad, pad, pad, 0)
         }
 
+        layout.addView(TextView(this).apply { text = getString(R.string.settings_language) })
+        val language = android.widget.Spinner(this).apply {
+            adapter = android.widget.ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf(getString(R.string.language_system), getString(R.string.language_en), getString(R.string.language_vi)))
+            setSelection(AppLanguage.choices.indexOf(AppLanguage.selected(this@MainActivity)))
+        }
+        layout.addView(language)
+        var languageChanged = false
+
         // ---- backend selection ----
         val anthropicRadio = RadioButton(this).apply {
             id = View.generateViewId()
@@ -138,7 +152,7 @@ class MainActivity : Activity() {
         }
         val codexRadio = RadioButton(this).apply {
             id = View.generateViewId()
-            text = "Codex (ChatGPT login)"
+            text = getString(R.string.settings_provider_codex)
         }
         val providerGroup = RadioGroup(this).apply {
             orientation = RadioGroup.VERTICAL
@@ -221,6 +235,9 @@ class MainActivity : Activity() {
             .setTitle(R.string.settings_title)
             .setView(scroll)
             .setPositiveButton(R.string.settings_save) { _, _ ->
+                val chosenLanguage = AppLanguage.choices[language.selectedItemPosition]
+                languageChanged = chosenLanguage != AppLanguage.selected(this)
+                if (languageChanged) AppLanguage.apply(this, chosenLanguage)
                 prefs.provider = when (providerGroup.checkedRadioButtonId) {
                     codexRadio.id -> Prefs.PROVIDER_CODEX
                     openaiRadio.id -> Prefs.PROVIDER_OPENAI
@@ -232,14 +249,17 @@ class MainActivity : Activity() {
                 prefs.openaiModel = openaiModelInput.text.toString()
                 prefs.openaiBaseUrl = openaiBaseUrlInput.text.toString()
                 if (!prefs.configured) {
-                    Toast.makeText(this, if (prefs.provider == Prefs.PROVIDER_CODEX) "Sign in and choose a Codex model first" else getString(R.string.toast_need_key), Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, if (prefs.provider == Prefs.PROVIDER_CODEX) getString(R.string.codex_need_model) else getString(R.string.toast_need_key), Toast.LENGTH_LONG).show()
                 }
             }
             .setOnDismissListener {
                 codexFields.close()
                 codexSettings = null
                 settingsOpen = false
-                controller.onResume()
+                if (languageChanged) {
+                    title = getString(R.string.app_name)
+                    showSettingsDialog()
+                } else controller.onResume()
             }
             .show()
     }

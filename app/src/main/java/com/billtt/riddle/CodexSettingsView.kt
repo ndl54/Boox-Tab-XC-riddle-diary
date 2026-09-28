@@ -28,16 +28,16 @@ class CodexSettingsView(private val activity: Activity, private val prefs: Prefs
     private var work: Job? = null
     private val status = TextView(activity).apply { setTextIsSelectable(true) }
     private val models = Spinner(activity)
-    private val device = button("Sign in with device code (recommended)") { login(false) }
-    private val browser = button("Sign in on this BOOX") { login(true) }
-    private val open = button("Open OpenAI sign-in page") { openPage(CodexProtocol.DEVICE_PAGE) }
-    private val refresh = button("Refresh model list") { loadModels() }
-    private val cancel = button("Cancel sign-in") {
+    private val device = button(context.getString(R.string.codex_device)) { login(false) }
+    private val browser = button(context.getString(R.string.codex_browser)) { login(true) }
+    private val open = button(context.getString(R.string.codex_open)) { openPage(CodexProtocol.DEVICE_PAGE) }
+    private val refresh = button(context.getString(R.string.codex_refresh)) { loadModels() }
+    private val cancel = button(context.getString(R.string.codex_cancel)) {
         work?.cancel()
         setBusy(false)
-        status.text = "Sign-in cancelled."
+        status.text = context.getString(R.string.codex_cancelled)
     }
-    private val logout = button("Sign out on this device") {
+    private val logout = button(context.getString(R.string.codex_logout)) {
         work?.cancel()
         scope.launch {
             withContext(Dispatchers.IO) { prefs.codexAuth.signOut() }
@@ -45,22 +45,22 @@ class CodexSettingsView(private val activity: Activity, private val prefs: Prefs
             prefs.codexModels = emptyList()
             populateModels()
             setBusy(false)
-            status.text = "Signed out."
+            status.text = context.getString(R.string.codex_logged_out)
         }
     }
 
     init {
         orientation = VERTICAL
         addView(TextView(activity).apply {
-            text = "Use your ChatGPT/Codex subscription. Device code can be approved on a phone, Mac or this BOOX. Enable device code in ChatGPT security settings if needed."
+            text = context.getString(R.string.codex_intro)
         })
         addView(status)
         addView(device); addView(browser); addView(open); addView(cancel)
-        addView(TextView(activity).apply { text = "Model for reading handwriting" })
+        addView(TextView(activity).apply { text = context.getString(R.string.codex_model_label) })
         addView(models); addView(refresh); addView(logout)
         populateModels()
         setBusy(false)
-        status.text = if (prefs.codexAuth.connected) "Signed in ${prefs.codexAuth.account}" else "Not signed in"
+        status.text = if (prefs.codexAuth.connected) context.getString(R.string.codex_signed_in, prefs.codexAuth.account) else context.getString(R.string.codex_not_signed_in)
         if (prefs.codexAuth.connected) loadModels()
     }
 
@@ -100,17 +100,17 @@ class CodexSettingsView(private val activity: Activity, private val prefs: Prefs
         work?.cancel()
         setBusy(true)
         open.visibility = View.GONE
-        status.text = "Starting Codex sign-in…"
+        status.text = context.getString(R.string.codex_starting)
         work = scope.launch {
             try {
                 val tokens = if (useBrowser) prefs.codexAuth.browserLogin { url ->
                     withContext(Dispatchers.Main) {
-                        status.text = "Complete sign-in in the browser, then return here. Keep this app open."
+                        status.text = context.getString(R.string.codex_browser_wait)
                         openPage(url)
                     }
                 } else prefs.codexAuth.deviceLogin { code ->
                     withContext(Dispatchers.Main) {
-                        status.text = "Open ${CodexProtocol.DEVICE_PAGE}\nEnter code: $code\nWaiting for approval (up to 15 minutes)…"
+                        status.text = context.getString(R.string.codex_device_wait, CodexProtocol.DEVICE_PAGE, code)
                         open.visibility = View.VISIBLE
                     }
                 }
@@ -121,7 +121,7 @@ class CodexSettingsView(private val activity: Activity, private val prefs: Prefs
                 prefs.codexModel = ""
                 populateModels()
                 open.visibility = View.GONE
-                status.text = "Signed in. Loading models…"
+                status.text = context.getString(R.string.codex_loading_after_login)
                 fetchModels()
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { status.text = safeError(e) }
@@ -132,12 +132,12 @@ class CodexSettingsView(private val activity: Activity, private val prefs: Prefs
     private fun loadModels() {
         work?.cancel()
         setBusy(true)
-        status.text = "Loading models…"
+        status.text = context.getString(R.string.codex_loading)
         work = scope.launch {
             try { fetchModels() }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                status.text = safeError(e) + if (prefs.codexModels.isNotEmpty()) "\nShowing the previously loaded list." else ""
+                status.text = safeError(e) + if (prefs.codexModels.isNotEmpty()) "\n" + context.getString(R.string.codex_cached) else ""
             }
             finally { if (currentCoroutineContext().isActive) setBusy(false) }
         }
@@ -147,19 +147,15 @@ class CodexSettingsView(private val activity: Activity, private val prefs: Prefs
         val list = withContext(Dispatchers.IO) { prefs.codexAuth.models() }
         prefs.codexModels = list
         populateModels()
-        status.text = "Signed in ${prefs.codexAuth.account}\n${list.size} models available. Choose one, then Save."
+        status.text = context.getString(R.string.codex_models_ready, prefs.codexAuth.account, list.size)
     }
 
     private fun openPage(url: String) {
         try { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-        catch (_: Exception) { status.text = "No browser available. Install a browser or approve the device code on another device." }
+        catch (_: Exception) { status.text = context.getString(R.string.codex_no_browser) }
     }
 
-    private fun safeError(e: Exception): String = when (e) {
-        is java.io.IOException -> e.message?.takeIf { !it.contains("https://") && !it.contains("token=") }
-            ?: "Cannot connect to Codex. Check your connection and try again."
-        else -> "Codex returned an unexpected response. Please try signing in again."
-    }
+    private fun safeError(e: Exception): String = UiError.describe(context, e)
 
     fun close() { scope.cancel() }
 }
