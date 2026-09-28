@@ -47,6 +47,8 @@ class MainActivity : Activity() {
     }
 
     private var penAttached = false
+    private var settingsOpen = false
+    private var codexSettings: CodexSettingsView? = null
 
     private fun tryAttachPen() {
         if (penAttached || !::controller.isInitialized || !hasWindowFocus()) return
@@ -76,7 +78,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         hideSystemUi()
-        if (::controller.isInitialized) controller.onResume()
+        if (::controller.isInitialized && !settingsOpen) controller.onResume()
     }
 
     /**
@@ -88,7 +90,7 @@ class MainActivity : Activity() {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus || !::controller.isInitialized) return
         hideSystemUi()
-        if (penAttached) controller.onResume() else tryAttachPen()
+        if (penAttached) { if (!settingsOpen) controller.onResume() } else tryAttachPen()
     }
 
     override fun onPause() {
@@ -97,6 +99,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        codexSettings?.close()
         super.onDestroy()
         if (::controller.isInitialized) controller.onDestroy()
     }
@@ -113,6 +116,8 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------- settings UI
 
     private fun showSettingsDialog() {
+        if (settingsOpen) return
+        settingsOpen = true
         // Pause raw pen mode while settings are open, so the dialog isn't covered by the ink layer.
         controller.onPause()
 
@@ -131,10 +136,15 @@ class MainActivity : Activity() {
             id = View.generateViewId()
             text = getString(R.string.settings_provider_openai)
         }
+        val codexRadio = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "Codex (ChatGPT login)"
+        }
         val providerGroup = RadioGroup(this).apply {
-            orientation = RadioGroup.HORIZONTAL
+            orientation = RadioGroup.VERTICAL
             addView(anthropicRadio)
             addView(openaiRadio)
+            addView(codexRadio)
         }
 
         // ---- Anthropic fields ----
@@ -177,6 +187,9 @@ class MainActivity : Activity() {
             addView(openaiBaseUrlInput)
         }
 
+        val codexFields = CodexSettingsView(this, prefs)
+        codexSettings = codexFields
+
         val hint = TextView(this).apply {
             text = getString(R.string.settings_hint_gesture)
             textSize = 12f
@@ -186,18 +199,21 @@ class MainActivity : Activity() {
         layout.addView(providerGroup)
         layout.addView(anthropicFields)
         layout.addView(openaiFields)
+        layout.addView(codexFields)
         layout.addView(hint)
 
-        fun applyVisibility(openai: Boolean) {
-            anthropicFields.visibility = if (openai) View.GONE else View.VISIBLE
-            openaiFields.visibility = if (openai) View.VISIBLE else View.GONE
+        fun applyVisibility(selected: Int) {
+            anthropicFields.visibility = if (selected == anthropicRadio.id) View.VISIBLE else View.GONE
+            openaiFields.visibility = if (selected == openaiRadio.id) View.VISIBLE else View.GONE
+            codexFields.visibility = if (selected == codexRadio.id) View.VISIBLE else View.GONE
         }
-        providerGroup.setOnCheckedChangeListener { _, checkedId ->
-            applyVisibility(checkedId == openaiRadio.id)
-        }
-        val isOpenAi = prefs.provider == Prefs.PROVIDER_OPENAI
-        providerGroup.check(if (isOpenAi) openaiRadio.id else anthropicRadio.id)
-        applyVisibility(isOpenAi)
+        providerGroup.setOnCheckedChangeListener { _, selected -> applyVisibility(selected) }
+        providerGroup.check(when (prefs.provider) {
+            Prefs.PROVIDER_CODEX -> codexRadio.id
+            Prefs.PROVIDER_OPENAI -> openaiRadio.id
+            else -> anthropicRadio.id
+        })
+        applyVisibility(providerGroup.checkedRadioButtonId)
 
         val scroll = ScrollView(this).apply { addView(layout) }
 
@@ -205,10 +221,10 @@ class MainActivity : Activity() {
             .setTitle(R.string.settings_title)
             .setView(scroll)
             .setPositiveButton(R.string.settings_save) { _, _ ->
-                prefs.provider = if (providerGroup.checkedRadioButtonId == openaiRadio.id) {
-                    Prefs.PROVIDER_OPENAI
-                } else {
-                    Prefs.PROVIDER_ANTHROPIC
+                prefs.provider = when (providerGroup.checkedRadioButtonId) {
+                    codexRadio.id -> Prefs.PROVIDER_CODEX
+                    openaiRadio.id -> Prefs.PROVIDER_OPENAI
+                    else -> Prefs.PROVIDER_ANTHROPIC
                 }
                 prefs.apiKey = anthropicKeyInput.text.toString()
                 prefs.model = anthropicModelInput.text.toString()
@@ -216,10 +232,15 @@ class MainActivity : Activity() {
                 prefs.openaiModel = openaiModelInput.text.toString()
                 prefs.openaiBaseUrl = openaiBaseUrlInput.text.toString()
                 if (!prefs.configured) {
-                    Toast.makeText(this, R.string.toast_need_key, Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, if (prefs.provider == Prefs.PROVIDER_CODEX) "Sign in and choose a Codex model first" else getString(R.string.toast_need_key), Toast.LENGTH_LONG).show()
                 }
             }
-            .setOnDismissListener { controller.onResume() }
+            .setOnDismissListener {
+                codexFields.close()
+                codexSettings = null
+                settingsOpen = false
+                controller.onResume()
+            }
             .show()
     }
 }

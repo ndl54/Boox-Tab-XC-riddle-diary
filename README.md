@@ -107,3 +107,7 @@ adb shell pm enable com.billtt.riddle
 - App code: MIT License (see `LICENSE`).
 - Concept and interaction inspired by
   [MaximeRivest/riddle](https://github.com/MaximeRivest/riddle) (MIT).
+
+## Codex / ChatGPT subscription login
+
+The fork supports **Codex (ChatGPT login)** directly on BOOX, with device-code and browser sign-in, an account model picker, encrypted session storage, and automatic token refresh. See [setup and implementation notes](docs/codex-login.md).

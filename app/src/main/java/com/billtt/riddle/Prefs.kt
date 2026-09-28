@@ -3,9 +3,10 @@ package com.billtt.riddle
 import android.content.Context
 
 class Prefs(context: Context) {
+    val codexAuth = CodexAuth(CodexStore(context.applicationContext))
     private val sp = context.getSharedPreferences("riddle", Context.MODE_PRIVATE)
 
-    /** Backend selection: PROVIDER_ANTHROPIC / PROVIDER_OPENAI */
+    /** Backend selection: PROVIDER_ANTHROPIC / PROVIDER_OPENAI / PROVIDER_CODEX */
     var provider: String
         get() = sp.getString("provider", PROVIDER_ANTHROPIC) ?: PROVIDER_ANTHROPIC
         set(value) = sp.edit().putString("provider", value).apply()
@@ -35,12 +36,34 @@ class Prefs(context: Context) {
         set(value) = sp.edit()
             .putString("openai_base_url", value.trim().ifEmpty { OpenAiOracle.DEFAULT_BASE_URL }).apply()
 
-    /** Whether the currently selected backend has its API key configured. */
+    /** Whether the selected backend has credentials and a model configured. */
     val configured: Boolean
-        get() = if (provider == PROVIDER_OPENAI) openaiKey.isNotEmpty() else apiKey.isNotEmpty()
+        get() = when (provider) {
+            PROVIDER_CODEX -> codexAuth.connected && codexModel.isNotBlank()
+            PROVIDER_OPENAI -> openaiKey.isNotEmpty()
+            else -> apiKey.isNotEmpty()
+        }
+
+    var codexModel: String
+        get() = sp.getString("codex_model", "").orEmpty()
+        set(value) = sp.edit().putString("codex_model", value).apply()
+
+    var codexModels: List<CodexProtocol.Model>
+        get() = runCatching {
+            val array = org.json.JSONArray(sp.getString("codex_models", "[]"))
+            (0 until array.length()).map { array.getJSONObject(it).let { m ->
+                CodexProtocol.Model(m.getString("id"), m.getString("label"))
+            } }
+        }.getOrDefault(emptyList())
+        set(value) {
+            val array = org.json.JSONArray()
+            value.forEach { array.put(org.json.JSONObject().put("id", it.id).put("label", it.label)) }
+            sp.edit().putString("codex_models", array.toString()).apply()
+        }
 
     companion object {
         const val PROVIDER_ANTHROPIC = "anthropic"
+        const val PROVIDER_CODEX = "codex"
         const val PROVIDER_OPENAI = "openai"
         const val DEFAULT_MODEL = "claude-opus-4-8"
     }

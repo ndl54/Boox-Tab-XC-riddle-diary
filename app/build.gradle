@@ -11,8 +11,8 @@ android {
         applicationId 'com.billtt.riddle'
         minSdk 28            // BOOX Note X2 出厂为 Android 11 (API 30)
         targetSdk 34
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 2
+        versionName '0.2.0'
     }
 
     buildTypes {
@@ -52,6 +52,8 @@ android {
 }
 
 dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
     // Onyx BOOX SDK：低延迟原始笔迹输入 + 电子墨水屏刷新控制。
     // 用 Boox-EinkDraw 实测零延迟的整套本地库（勿升 maven 新版）：
     // pen/base/device 的 AAR 只是壳，硬件快速笔迹引擎 NeoPenNative 等真身类

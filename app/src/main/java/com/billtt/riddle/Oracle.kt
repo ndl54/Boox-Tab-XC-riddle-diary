@@ -10,8 +10,9 @@ interface Oracle {
 }
 
 object OracleFactory {
-    /** Pick the backend per settings; returns null if its API key is not configured. */
+    /** Pick the backend per settings; returns null when credentials or the selected model are missing. */
     fun create(prefs: Prefs): Oracle? = when (prefs.provider) {
+        Prefs.PROVIDER_CODEX -> if (prefs.configured) CodexOracle(prefs.codexAuth, prefs.codexModel) else null
         Prefs.PROVIDER_OPENAI ->
             prefs.openaiKey.takeIf { it.isNotEmpty() }
                 ?.let { OpenAiOracle(it, prefs.openaiModel, prefs.openaiBaseUrl) }
@@ -21,7 +22,7 @@ object OracleFactory {
     }
 }
 
-/** Persona and instruction shared by both backends. */
+/** Persona and instruction shared by all backends. */
 object OraclePrompts {
 
     val PERSONA = """
