@@ -36,8 +36,15 @@ jobs:
       - name: Test conversations and Codex protocol
         run: ./gradlew --no-daemon testDebugUnitTest
 
-      - name: Build signed APK
-        run: ./gradlew --no-daemon assembleDebug
+      - name: Build signed release APK
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Verify APK signature
+        run: '"$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk'
+
+      - name: Remove signing material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/boox-signing"
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
